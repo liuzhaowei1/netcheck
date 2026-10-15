@@ -22,6 +22,10 @@
 - **停止**：测试中可随时点「■ 停止」，只想看出口、不想等测速时用
 - 可置顶、系统托盘图标
 
+## 下载
+
+不想装 Python：到 [Releases](https://github.com/liuzhaowei1/netcheck/releases) 下载 `NetCheck.exe`，双击即用。exe 由 PyInstaller 打包，部分杀毒软件可能误报；不放心可按下文用源码运行或自行打包。
+
 ## 使用
 
 需要 Windows 和 Python 3（带 tkinter；作者环境为 Python 3.10）。无第三方依赖。
