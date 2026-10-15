@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.spec
+_geom.txt
+_vt/
+tools/data/
+tools/node_modules/
+tools/package*.json
