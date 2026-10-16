@@ -801,8 +801,10 @@ class App:
     def restore(self):
         self.root.deiconify()
         self.root.overrideredirect(True)  # 部分环境 deiconify 会丢无边框，重置
-        self.root.attributes("-topmost", self.cfg["always_on_top"])
+        self.root.attributes("-topmost", True)  # 临时顶到最前，压过被 Win+D 顶起的桌面层
         self.root.lift()
+        if not self.cfg["always_on_top"]:
+            self.root.after(100, lambda: self.root.attributes("-topmost", False))
 
     # ----- 出口地图浮窗 -----
     def _build_map_win(self):
