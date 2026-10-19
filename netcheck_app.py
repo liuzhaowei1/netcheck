@@ -90,8 +90,11 @@ def foreign_all_down(sites):
 
 
 def should_skip_speed(proxy, sites):
-    """代理没开/端口不通/境外全挂时测速没有意义，跳过省约 10 秒。"""
-    if proxy is not None and (not proxy["enabled"] or proxy["alive"] is False):
+    """代理端口不通/境外全挂时经代理测速必然失败，跳过省约 10 秒。
+    代理没开时照常测：测速直连 Cloudflare，测的是本地宽带。"""
+    if proxy is not None and not proxy["enabled"]:
+        return False
+    if proxy is not None and proxy["alive"] is False:
         return True
     return foreign_all_down(sites)
 

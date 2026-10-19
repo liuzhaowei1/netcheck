@@ -56,6 +56,9 @@ assert a.diagnose(None, [None] * N, None) is None
 assert a.should_skip_speed({**PROXY_OK, "alive": False}, all_sites(True))
 assert a.should_skip_speed(PROXY_OK, all_sites(False))
 assert not a.should_skip_speed(PROXY_OK, all_sites(True))
+PROXY_OFF = {"enabled": False, "server": None, "alive": None}
+assert not a.should_skip_speed(PROXY_OFF, all_sites(True))
+assert not a.should_skip_speed(PROXY_OFF, all_sites(False))  # 直连测速不看境外站点
 
 # 托盘图标像素在网格内
 px, w, h = a.tray_icon_pixels()
