@@ -43,6 +43,18 @@ MAP_GAP = 8             # 地图浮窗与主窗口间隔（设计稿 px）
 MAP_ON_ALPHA = 0.82     # 点亮色透明度（设计稿 fill-opacity .82）
 RING_S = 1.6            # 城市白点扩散圈周期（设计稿 @keyframes ring 1.6s）
 UI_SCALE = 0.866        # 整体缩放：宽高各 ×0.866 ≈ 面积 75%（2026-10-14 用户定：相对 375×302 缩小 25%）
+# 贴边收起（2026-10-23 用户定，设计稿 https://claude.ai/artifact/VZbDd5KB5UGhc6AVKTsWMZ）
+DOCK_EDGES = ("left", "right", "top")   # 下边是任务栏，不吸附
+DOCK_SNAP = 20          # 松手时离边 ≤ 20 设计稿 px 即吸附
+DOCK_EXPAND_S = 0.4     # 鼠标停在标签上 0.4s 才展开：留出单击标签直接测试的时间
+DOCK_COLLAPSE_S = 0.6   # 离开浮窗 0.6s 后收回标签
+DOCK_POP_S = 2.0        # 托盘唤醒时展开后至少停留 2s
+DOCK_ANIM_MS = 180      # 滑动动画（ease-out），与 CC Pulse 一致
+DOCK_FRAME_MS = 20
+DOCK_POLL_MS = 50
+TAB_H = 26              # 标签高（设计稿 px）
+TAB_MARK = 2            # 标签朝屏幕内侧那道状态色
+TAB_CITY_MAX = 7        # 标签城市最多 7 个字，再长截断加「…」
 
 
 def P(px):
@@ -52,7 +64,7 @@ def P(px):
 CONFIG_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "NetCheck")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 DEFAULT_CFG = {"pos_x": None, "pos_y": None, "always_on_top": True, "last_exit": None,
-               "exit_history": []}
+               "exit_history": [], "dock_edge": None}
 HISTORY_N = 10          # 出口历史保留条数（新→旧）；「历史」按钮只用到上一条
 EXIT_KEYS = ("ip", "cc", "country", "region", "city", "org", "region_code", "lat", "lon")
 
@@ -158,6 +170,86 @@ def city_text(ip):
     return f"{ip['country']} · {ip['city'] or ip['region'] or '?'}"
 
 
+# ----- 贴边收起 -----
+def work_area(screen_w, screen_h):
+    """主屏工作区 (left, top, right, bottom)，即扣掉任务栏的部分。
+    进程已声明 DPI 感知，SPI_GETWORKAREA 与 tk 坐标同为物理像素，可直接比较。"""
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            import ctypes.wintypes as wintypes
+            r = wintypes.RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0):
+                return r.left, r.top, r.right, r.bottom
+        except Exception:  # noqa: BLE001
+            pass
+    return 0, 0, screen_w, screen_h
+
+
+def dock_edge_for(x, y, width, area, snap):
+    """松手位置离哪条可吸附边 ≤ snap（越过边缘也算）；都不靠则 None。左右优先于上。"""
+    left, top, right, _bottom = area
+    if x - left <= snap:
+        return "left"
+    if right - (x + width) <= snap:
+        return "right"
+    if y - top <= snap:
+        return "top"
+    return None
+
+
+def dock_geometry(edge, x, y, width, height, area, collapsed):
+    """贴边时浮窗左上角。展开＝贴齐该边；收起＝整个移出屏幕（屏幕上只留标签窗口）。
+    沿边方向的坐标夹在工作区内。"""
+    left, top, right, bottom = area
+    if edge in ("left", "right"):
+        y = max(top, min(bottom - height, y))
+        if edge == "left":
+            x = left - width if collapsed else left
+        else:
+            x = right if collapsed else right - width
+    elif edge == "top":
+        x = max(left, min(right - width, x))
+        y = top - height if collapsed else top
+    return x, y
+
+
+def tab_geometry(edge, x, y, tab_w, tab_h, area, along):
+    """标签左上角。x/y 是浮窗展开时的位置，along 是标签相对浮窗的偏移
+    （左右边：出口行的纵向偏移；上边：横向偏移），标签与出口行对齐，夹在工作区内。"""
+    left, top, right, bottom = area
+    if edge == "top":
+        return max(left, min(right - tab_w, x + along)), top
+    ty = max(top, min(bottom - tab_h, y + along))
+    return (left if edge == "left" else right - tab_w), ty
+
+
+def short_city(ip, limit=TAB_CITY_MAX):
+    """标签上的城市：取城市（没有就取州/省），超过 limit 个字截断加「…」。"""
+    c = ((ip or {}).get("city") or (ip or {}).get("region") or "?").strip() or "?"
+    return c if len(c) <= limit else c[:limit] + "…"
+
+
+def tab_content(running, ip, bad, all_down, changed, stopped_noip=False, tested=False):
+    """标签显示 (国家码, 文字, 级别)；级别 ∈ fg / warn / bad / run / none。
+    bad=顶部提示条是红色（diagnose 有结果）；all_down=境外全部不通；
+    tested=本次启动后测过（测过却没查到出口才算「查不到」）。"""
+    if running:
+        return "··", "测试中", "run"
+    if stopped_noip:
+        return "··", "已停止", "none"
+    if not ip:
+        return ("!", "查不到", "bad") if tested else ("··", "未测", "none")
+    cc = ip.get("cc") or "?"
+    if all_down:
+        return cc, "不通", "bad"
+    if bad:
+        return cc, short_city(ip), "bad"
+    if changed:
+        return cc, short_city(ip), "warn"
+    return cc, short_city(ip), "fg"
+
+
 # ---------- 配置 ----------
 def load_config():
     cfg = dict(DEFAULT_CFG)
@@ -168,6 +260,8 @@ def load_config():
         pass
     if not cfg.get("exit_history") and cfg.get("last_exit"):
         cfg["exit_history"] = [dict(cfg["last_exit"], time=None)]
+    if cfg.get("dock_edge") not in DOCK_EDGES:
+        cfg["dock_edge"] = None
     return cfg
 
 
@@ -250,10 +344,25 @@ class App:
         self.t0 = 0.0
         self.state = {}
         self._drag = (0, 0)
+        # 贴边状态：dock_edge=None 为自由浮动；_dock_xy 是展开时的位置（存配置用的也是它）
+        self.dock_edge = None
+        self.dock_collapsed = False
+        self._dock_xy = (0, 0)
+        self._dock_anim = None
+        self._dragging = False
+        self._hover_since = self._leave_since = None
+        self._pop_until = 0.0
+        self._tab_block = False     # 单击标签开始测试后，鼠标移出标签前不再悬停展开
+        self._tab_sig = None
+        self._stopped_noip = False  # 本次测试在查到出口前被停止
 
         self._build()
+        self._build_tab()
         self._place()
         self._render_idle()
+        if self.cfg.get("dock_edge"):
+            self._restore_dock(self.cfg["dock_edge"])
+        self.root.after(DOCK_POLL_MS, self._dock_poll)
 
         self._tray_q = queue.Queue()
         self.tray = None
@@ -439,6 +548,11 @@ class App:
         if size != self._size:
             self._size = size
             self.root.geometry("%dx%d" % size)
+            # 贴边时高度变了（提示条出现/消失）：按新高度重新贴齐，收起时仍完整藏在屏幕外
+            if self.dock_edge and self._dock_anim is None:
+                x, y = dock_geometry(self.dock_edge, *self._dock_xy, *size,
+                                     self._work_area(), self.dock_collapsed)
+                self.root.geometry("+%d+%d" % (x, y))
 
     def _fit_text(self, lbl, text, max_px):
         """文字超出 max_px 时截断加省略号。"""
@@ -495,6 +609,7 @@ class App:
         if self.running:
             return
         self.running = True
+        self._stopped_noip = False
         self.t0 = time.perf_counter()
         self.state = {"proxy": None, "sites": [None] * len(core.TARGETS), "ip": None, "ip_done": False}
         self._hero_ip = None
@@ -644,6 +759,7 @@ class App:
                 dot.config(fg=T["muted"])
                 ms.config(text="—", fg=T["muted"])
         if not self.state["ip_done"]:
+            self._stopped_noip = True
             self.cc_lbl.config(text="··", fg=T["muted"])
             self._set_city("已停止", fg=T["fg_dim"], font=(UI, 10))
             self.ipl_lbl.config(text="", fg=T["fg_dim"])
@@ -767,6 +883,8 @@ class App:
             self.btn_go.config(text=f"■ 停止 {int(time.perf_counter() - self.t0)}s")
             if self._peek is None:
                 self._pulse()
+        if self.dock_edge and self.dock_collapsed and self._dock_anim is None:
+            self._update_tab()
         try:
             while True:
                 act = self._tray_q.get_nowait()
@@ -781,24 +899,37 @@ class App:
 
     # ----- 窗口动作 -----
     def _drag_start(self, e):
+        self._dragging = True
         self._drag = (e.x_root - self.root.winfo_x(), e.y_root - self.root.winfo_y())
 
     def _drag_move(self, e):
+        if self.dock_edge:      # 从边上拖开 → 恢复自由浮动
+            self._undock()
         self.root.geometry(f"+{e.x_root - self._drag[0]}+{e.y_root - self._drag[1]}")
 
-    def _drag_end(self, _e):
-        self.cfg["pos_x"], self.cfg["pos_y"] = self.root.winfo_x(), self.root.winfo_y()
+    def _drag_end(self, e):
+        self._dragging = False
+        # 用事件坐标算松手位置：geometry() 刚设下去时 winfo_x 还是旧值
+        x, y = e.x_root - self._drag[0], e.y_root - self._drag[1]
+        snap = int(self.root.winfo_fpixels(P(DOCK_SNAP)))
+        edge = dock_edge_for(x, y, self.root.winfo_width(), self._work_area(), snap)
+        if edge:
+            self._dock(edge, x, y)
+            x, y = self._dock_xy
+        self.cfg["pos_x"], self.cfg["pos_y"] = x, y
+        self.cfg["dock_edge"] = self.dock_edge
         save_config(self.cfg)
 
     def toggle_pin(self):
         self.cfg["always_on_top"] = not self.cfg["always_on_top"]
-        self.root.attributes("-topmost", self.cfg["always_on_top"])
+        self.root.attributes("-topmost", self._want_topmost())
         self._refresh_pin()
         save_config(self.cfg)
 
     def minimize(self):
         if self.tray is None:
             return
+        self._hide_tab()
         self.root.withdraw()
 
     def restore(self):
@@ -806,8 +937,211 @@ class App:
         self.root.overrideredirect(True)  # 部分环境 deiconify 会丢无边框，重置
         self.root.attributes("-topmost", True)  # 临时顶到最前，压过被 Win+D 顶起的桌面层
         self.root.lift()
-        if not self.cfg["always_on_top"]:
+        if self.dock_edge:      # 贴边时托盘唤醒＝展开，至少停 2s 再按鼠标位置决定收不收
+            self._pop_until = time.time() + DOCK_POP_S
+            if self.dock_collapsed:
+                self._set_collapsed(False)
+        if not self._want_topmost():
             self.root.after(100, lambda: self.root.attributes("-topmost", False))
+
+    # ----- 贴边收起 -----
+    def _work_area(self):
+        return work_area(self.root.winfo_screenwidth(), self.root.winfo_screenheight())
+
+    def _want_topmost(self):
+        # 贴边时强制置顶（否则标签和展开的浮窗会被别的窗口盖住）；自由浮动时听 📌
+        return bool(self.dock_edge) or self.cfg["always_on_top"]
+
+    def _dock(self, edge, x, y):
+        """从 (x, y) 吸附到 edge：先展开贴齐，鼠标离开后由 _dock_poll 收成标签。"""
+        x, y = dock_geometry(edge, x, y, self.root.winfo_width(), self.root.winfo_height(),
+                             self._work_area(), collapsed=False)
+        self.dock_edge, self.dock_collapsed = edge, False
+        self._dock_xy = (x, y)
+        self._hover_since = self._leave_since = None
+        self._layout_tab()
+        self.root.attributes("-topmost", True)
+        self._slide_to(x, y)
+
+    def _restore_dock(self, edge):
+        """启动时按配置直接贴边收起（不播动画）。"""
+        r = self.root
+        r.update_idletasks()
+        w, h = r.winfo_width(), r.winfo_height()
+        area = self._work_area()
+        self.dock_edge = edge
+        self._dock_xy = dock_geometry(edge, r.winfo_x(), r.winfo_y(), w, h, area, collapsed=False)
+        self.dock_collapsed = True
+        self._layout_tab()
+        r.attributes("-topmost", True)
+        r.geometry("+%d+%d" % dock_geometry(edge, *self._dock_xy, w, h, area, collapsed=True))
+        self._show_tab()
+
+    def _undock(self):
+        self._cancel_slide()
+        self.dock_edge, self.dock_collapsed = None, False
+        self._hide_tab()
+        self.root.attributes("-topmost", self._want_topmost())
+
+    def _set_collapsed(self, collapsed):
+        if not self.dock_edge or collapsed == self.dock_collapsed:
+            return
+        self.dock_collapsed = collapsed
+        self._hover_since = self._leave_since = None
+        x, y = dock_geometry(self.dock_edge, *self._dock_xy, self.root.winfo_width(),
+                             self.root.winfo_height(), self._work_area(), collapsed)
+        if not collapsed:
+            self._hide_tab()    # 展开：先撤标签再滑出
+        self._slide_to(x, y, on_done=self._show_tab if collapsed else None)
+
+    def _cancel_slide(self):
+        if self._dock_anim is not None:
+            self.root.after_cancel(self._dock_anim)
+            self._dock_anim = None
+
+    def _slide_to(self, tx, ty, on_done=None):
+        """ease-out 滑动到 (tx, ty)；新动画接管旧动画，从当前位置继续。"""
+        self._cancel_slide()
+        self.root.update_idletasks()    # 先让挂起的 geometry 生效，起点才准
+        sx, sy = self.root.winfo_x(), self.root.winfo_y()
+        n = max(1, DOCK_ANIM_MS // DOCK_FRAME_MS)
+
+        def step(i):
+            k = 1 - (1 - i / n) ** 3
+            self.root.geometry("+%d+%d" % (round(sx + (tx - sx) * k), round(sy + (ty - sy) * k)))
+            if i < n:
+                self._dock_anim = self.root.after(DOCK_FRAME_MS, step, i + 1)
+            else:
+                self._dock_anim = None
+                if on_done:
+                    on_done()
+        step(1)
+
+    @staticmethod
+    def _pointer_in(win, px, py):
+        if win is None or not win.winfo_viewable():
+            return False
+        x, y = win.winfo_rootx(), win.winfo_rooty()
+        return x <= px < x + win.winfo_width() and y <= py < y + win.winfo_height()
+
+    def _dock_poll(self):
+        try:
+            if self.dock_edge and self._dock_anim is None and not self._dragging \
+                    and self.root.state() != "withdrawn":
+                now = time.time()
+                px, py = self.root.winfo_pointerxy()
+                if self.dock_collapsed:
+                    if self._pointer_in(self.tab_win, px, py):
+                        if self._tab_block:
+                            pass
+                        elif self._hover_since is None:
+                            self._hover_since = now
+                        elif now - self._hover_since >= DOCK_EXPAND_S:
+                            self._set_collapsed(False)
+                    else:
+                        self._hover_since = None
+                        self._tab_block = False
+                else:
+                    # 按着「历史」或国家码（地图浮窗开着）时不收
+                    if self._pointer_in(self.root, px, py) or self._peek is not None \
+                            or self._pointer_in(self.map_win, px, py) \
+                            or (self.map_win is not None and self.map_win.winfo_viewable()):
+                        self._leave_since = None
+                    elif self._leave_since is None:
+                        self._leave_since = now
+                    if self._leave_since is not None and now >= self._pop_until \
+                            and now - self._leave_since >= DOCK_COLLAPSE_S:
+                        self._set_collapsed(True)
+        except tk.TclError:
+            pass
+        finally:
+            if self.root.winfo_exists():
+                self.root.after(DOCK_POLL_MS, self._dock_poll)
+
+    # ----- 标签窗口 -----
+    def _build_tab(self):
+        w = tk.Toplevel(self.root, bg=T["title_bg"])
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        w.withdraw()
+        self.tab_mark = tk.Frame(w, bg=T["accent"])
+        self.tab_body = tk.Frame(w, bg=T["title_bg"])
+        self.tab_cc = tk.Label(self.tab_body, text="··", bg=T["bg"], fg=T["fg_dim"],
+                               font=(MONO, 7, "bold"), padx=P(3), pady=0, bd=0)
+        self.tab_cc.pack(side="left", padx=(P(8), P(5)))
+        self.tab_city = tk.Label(self.tab_body, text="", bg=T["title_bg"], fg=T["fg"],
+                                 font=(UI, 9, "bold"), padx=0, pady=0, bd=0)
+        self.tab_city.pack(side="left", padx=(0, P(9)))
+        for x in (w, self.tab_mark, self.tab_body, self.tab_cc, self.tab_city):
+            x.configure(cursor="hand2")
+            x.bind("<Button-1>", self._tab_click)
+        self.tab_win = w
+
+    def _layout_tab(self):
+        """状态色那一道放在贴着屏幕边的一侧。"""
+        m = int(self.root.winfo_fpixels(P(TAB_MARK)))
+        self.tab_mark.pack_forget()
+        self.tab_body.pack_forget()
+        side = {"left": "left", "right": "right", "top": "top"}[self.dock_edge]
+        if side == "top":
+            self.tab_mark.config(height=m, width=1)
+            self.tab_mark.pack(side="top", fill="x")
+        else:
+            self.tab_mark.config(width=m, height=1)
+            self.tab_mark.pack(side=side, fill="y")
+        self.tab_body.pack(side="left", fill="both", expand=True)
+        self._tab_sig = None
+
+    def _tab_click(self, _e):
+        """单击标签：直接开始一次测试，不展开（展开靠悬停 0.4s）。"""
+        self._tab_block = True
+        self._hover_since = None
+        if not self.running:
+            self.start_test()
+        self._update_tab()
+
+    def _show_tab(self):
+        self._tab_sig = None
+        self._update_tab()
+        self.tab_win.deiconify()
+        self.tab_win.attributes("-topmost", True)
+        self.tab_win.lift()
+
+    def _hide_tab(self):
+        self.tab_win.withdraw()
+
+    def _update_tab(self):
+        s = self.state
+        sites = s.get("sites") or []
+        all_down = bool(sites) and foreign_all_down(sites)
+        bad = bool(s) and diagnose(s.get("proxy"), sites, s.get("ip")) is not None
+        cc, text, lvl = tab_content(self.running, self._hero_ip, bad, all_down,
+                                    bool(s.get("changed_from")), self._stopped_noip, tested=bool(s))
+        if lvl == "run":
+            import math
+            k = (1 + math.cos(2 * math.pi * (time.perf_counter() - self.t0) / PULSE_S)) / 2
+            self.tab_city.config(fg=blend(T["title_bg"], T["fg_dim"], PULSE_MIN + (1 - PULSE_MIN) * k))
+        sig = (cc, text, lvl, self.dock_edge, self._dock_xy)
+        if sig == self._tab_sig:
+            return
+        self._tab_sig = sig
+        fg = {"fg": T["fg"], "warn": T["warn"], "bad": T["bad"], "run": T["fg_dim"], "none": T["fg_dim"]}[lvl]
+        mark = {"fg": T["accent"], "warn": T["warn"], "bad": T["bad"]}.get(lvl, T["muted"])
+        self.tab_cc.config(text=cc)
+        self.tab_city.config(text=text, font=(UI, 9, "normal" if lvl == "none" else "bold"))
+        if lvl != "run":
+            self.tab_city.config(fg=fg)
+        self.tab_mark.config(bg=mark)
+        r = self.root
+        self.tab_win.update_idletasks()
+        th = int(r.winfo_fpixels(P(TAB_H)))
+        tw = self.tab_win.winfo_reqwidth()
+        if self.dock_edge == "top":
+            along = int(r.winfo_fpixels(P(12)))
+        else:   # 与出口行（国家码方块）垂直居中对齐
+            along = self.hero.winfo_y() + self.cc_lbl.winfo_y() + (self.cc_lbl.winfo_height() - th) // 2
+        x, y = tab_geometry(self.dock_edge, *self._dock_xy, tw, th, self._work_area(), along)
+        self.tab_win.geometry("%dx%d+%d+%d" % (tw, th, x, y))
 
     # ----- 出口地图浮窗 -----
     def _build_map_win(self):
@@ -911,7 +1245,9 @@ class App:
 
     def close(self):
         self._map_hide()
-        self.cfg["pos_x"], self.cfg["pos_y"] = self.root.winfo_x(), self.root.winfo_y()
+        self.cfg["pos_x"], self.cfg["pos_y"] = self._dock_xy if self.dock_edge \
+            else (self.root.winfo_x(), self.root.winfo_y())
+        self.cfg["dock_edge"] = self.dock_edge
         save_config(self.cfg)
         if self.tray:
             self.tray.stop()

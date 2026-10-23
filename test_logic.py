@@ -119,4 +119,40 @@ assert M.map_spec({"cc": "US", "region": "加州"})["sub"] == "旧记录，无�
 assert M.map_spec(None) is None and M.map_spec({"cc": None}) is None
 assert M.map_spec({"cc": "AQ"})["on"] is None             # 不在图里的地区：不点亮，不报错
 
+# 贴边收起
+AREA = (0, 0, 1920, 1032)
+assert a.dock_edge_for(5, 300, 324, AREA, 20) == "left"
+assert a.dock_edge_for(-40, 300, 324, AREA, 20) == "left"          # 越过边缘也算
+assert a.dock_edge_for(1920 - 324 - 20, 300, 324, AREA, 20) == "right"
+assert a.dock_edge_for(1920 - 324 - 21, 300, 324, AREA, 20) is None
+assert a.dock_edge_for(600, 10, 324, AREA, 20) == "top"
+assert a.dock_edge_for(10, 10, 324, AREA, 20) == "left"            # 左右优先于上
+assert a.dock_edge_for(600, 300, 324, AREA, 20) is None
+assert a.dock_geometry("left", 7, 300, 324, 277, AREA, False) == (0, 300)
+assert a.dock_geometry("left", 7, 300, 324, 277, AREA, True) == (-324, 300)
+assert a.dock_geometry("right", 1500, 300, 324, 277, AREA, False) == (1596, 300)
+assert a.dock_geometry("right", 1500, 300, 324, 277, AREA, True) == (1920, 300)
+assert a.dock_geometry("left", 0, 900, 324, 277, AREA, False) == (0, 755)     # 夹在工作区内
+assert a.dock_geometry("top", 1800, 3, 324, 277, AREA, False) == (1596, 0)
+assert a.dock_geometry("top", 600, 3, 324, 277, AREA, True) == (600, -277)
+assert a.tab_geometry("left", 0, 300, 90, 33, AREA, 40) == (0, 340)
+assert a.tab_geometry("right", 1596, 300, 90, 33, AREA, 40) == (1830, 340)
+assert a.tab_geometry("top", 600, 0, 90, 33, AREA, 15) == (615, 0)
+assert a.tab_geometry("left", 0, 1010, 90, 33, AREA, 40) == (0, 999)          # 不越出工作区
+assert a.tab_geometry("top", 1900, 0, 90, 33, AREA, 15) == (1830, 0)
+assert a.short_city({"city": "洛杉矶", "region": "加州"}) == "洛杉矶"
+assert a.short_city({"city": "", "region": "新北市"}) == "新北市"
+assert a.short_city({"city": "Minamishinagawa"}) == "Minamis…"
+assert a.short_city(None) == "?"
+LA = {"cc": "US", "city": "洛杉矶", "region": "加州"}
+assert a.tab_content(True, LA, False, False, False) == ("··", "测试中", "run")
+assert a.tab_content(False, None, False, False, False, stopped_noip=True) == ("··", "已停止", "none")
+assert a.tab_content(False, None, False, False, False) == ("··", "未测", "none")
+assert a.tab_content(False, None, True, False, False, tested=True) == ("!", "查不到", "bad")
+assert a.tab_content(False, LA, False, False, False) == ("US", "洛杉矶", "fg")
+assert a.tab_content(False, LA, False, False, True) == ("US", "洛杉矶", "warn")
+assert a.tab_content(False, LA, True, True, True) == ("US", "不通", "bad")
+assert a.tab_content(False, {"cc": "CN", "city": "福州"}, True, False, False) == ("CN", "福州", "bad")
+assert a.DOCK_EDGES == ("left", "right", "top") and a.DEFAULT_CFG["dock_edge"] is None
+
 print("ALL PASS")
