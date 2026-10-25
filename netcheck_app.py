@@ -276,8 +276,14 @@ def save_config(cfg):
         pass
 
 
+def app_icon_path():
+    """assets/app.ico：打包后在 _MEIPASS（--add-data 带入），源码运行在脚本旁。"""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "assets", "app.ico")
+
+
 def tray_icon_pixels(size=16):
-    """托盘图标：绿色圆环 + 赤道/经线，程序内生成，无图片资源。"""
+    """托盘图标回退（app.ico 读不到时用）：绿色圆环 + 赤道/经线，程序内生成，无图片资源。"""
     px, c, r = [], (size - 1) / 2, size / 2 - 1
     for y in range(size):
         for x in range(size):
@@ -370,7 +376,7 @@ class App:
             try:
                 import tray as _tray
                 self.tray = _tray.TrayIcon(
-                    tip="NetCheck", icon=tray_icon_pixels(),
+                    tip="NetCheck", icon=tray_icon_pixels(), icon_file=app_icon_path(),
                     on_show=lambda: self._tray_q.put("show"),
                     on_exit=lambda: self._tray_q.put("exit"))
                 self.tray.start()

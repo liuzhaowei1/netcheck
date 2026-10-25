@@ -177,6 +177,10 @@ if IS_WIN:
     user32.CreateIconIndirect.argtypes = [POINTER(ICONINFO)]
     user32.DestroyIcon.restype = BOOL
     user32.DestroyIcon.argtypes = [HICON]
+    user32.LoadImageW.restype = HANDLE
+    user32.LoadImageW.argtypes = [HINSTANCE, LPCWSTR, UINT, c_int, c_int, UINT]
+    user32.GetSystemMetrics.restype = c_int
+    user32.GetSystemMetrics.argtypes = [c_int]
 
     kernel32.GetModuleHandleW.restype = HMODULE
     kernel32.GetModuleHandleW.argtypes = [LPCWSTR]
@@ -253,7 +257,7 @@ class TrayIcon:
     """系统托盘图标控制器。start() 一次（建窗口+消息循环线程）；
     add()/remove() 在最小化/恢复时显隐图标；stop() 退出时收尾。"""
 
-    def __init__(self, tip="NetCheck", on_show=None, on_exit=None, icon=None):
+    def __init__(self, tip="NetCheck", on_show=None, on_exit=None, icon=None, icon_file=None):
         self.supported = IS_WIN
         self.tip = tip
         self.on_show = on_show or (lambda: None)
@@ -266,6 +270,7 @@ class TrayIcon:
         self._ready = threading.Event()
         self._wndproc_cb = None
         self._icon_src = icon
+        self._icon_file = icon_file     # .ico 路径，优先；读不到再用 icon 像素
         self._class_name = "NetCheckTrayWnd"
         self._hinst = None
 
@@ -291,8 +296,13 @@ class TrayIcon:
                 0, self._class_name, "NetCheck", 0, 0, 0, 0, 0,
                 None, None, self._hinst, None)
             try:
-                pixels, gw, gh = self._icon_src
-                self._hicon = _make_hicon(pixels, gw, gh, 32)
+                self._hicon = None
+                if self._icon_file:
+                    sm = user32.GetSystemMetrics(49)            # SM_CXSMICON，随 DPI
+                    self._hicon = user32.LoadImageW(None, self._icon_file, 1, sm, sm, 0x10)  # IMAGE_ICON, LR_LOADFROMFILE
+                if not self._hicon:
+                    pixels, gw, gh = self._icon_src
+                    self._hicon = _make_hicon(pixels, gw, gh, 32)
             except Exception:
                 self._hicon = user32.LoadCursorW(None, _MAKEINTRESOURCE(32512))
         except Exception:

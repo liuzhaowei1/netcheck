@@ -53,7 +53,7 @@ NetCheck 跟浏览器一样，读取 **Windows 系统代理**（设置 → 网�
 
 ```
 pip install pyinstaller
-python -m PyInstaller --onefile --windowed --name NetCheck --icon assets/app.ico --noconfirm --clean netcheck_app.py
+python -m PyInstaller --onefile --windowed --name NetCheck --icon assets/app.ico --add-data "assets/app.ico;assets" --noconfirm --clean netcheck_app.py
 ```
 
 产物在 `dist/NetCheck.exe`。
